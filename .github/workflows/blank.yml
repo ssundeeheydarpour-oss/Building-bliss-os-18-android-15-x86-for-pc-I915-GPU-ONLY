@@ -1,0 +1,110 @@
+name: Build BlissOS 18 x86_64 Intel i915 ISO
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo apt clean
+
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+        git-core gnupg flex bison gperf \
+        build-essential zip curl wget \
+        zlib1g-dev gcc-multilib g++-multilib \
+        libc6-dev-i386 \
+        lib32ncurses-dev \
+        libx11-dev lib32z-dev \
+        ccache ninja-build \
+        libgl1-mesa-dev \
+        libxml2-utils xsltproc \
+        unzip squashfs-tools \
+        python3-mako \
+        libssl-dev \
+        xorriso genisoimage \
+        syslinux syslinux-utils \
+        bc rsync \
+        git-lfs
+
+    - name: Install repo
+      run: |
+        mkdir -p ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo \
+        -o ~/bin/repo
+        chmod +x ~/bin/repo
+        echo "$HOME/bin" >> $GITHUB_PATH
+
+
+    - name: Download BlissOS source
+      run: |
+        mkdir bliss
+        cd bliss
+
+        repo init \
+        -u https://github.com/BlissRoms-x86/manifest.git \
+        -b arcadia-x86 \
+        --git-lfs
+
+
+    - name: Sync source
+      run: |
+        cd bliss
+
+        repo sync \
+        -c \
+        --force-sync \
+        --no-clone-bundle \
+        --no-tags \
+        -j$(nproc)
+
+
+    - name: Enable Intel i915 driver
+      run: |
+        cd bliss
+
+        echo "Searching kernel configs..."
+
+        find kernel -name "*defconfig" | head
+
+        # Enable Intel GPU support
+        find kernel -name "*defconfig" -exec sed -i \
+        's/# CONFIG_DRM_I915 is not set/CONFIG_DRM_I915=y/' {} \;
+
+        # Include Intel firmware
+        grep -R "I915" device kernel || true
+
+
+    - name: Build BlissOS
+      run: |
+        cd bliss
+
+        source build/envsetup.sh
+
+        lunch bliss_x86_64-userdebug
+
+        export BOARD_KERNEL_CMDLINE="i915.enable_guc=2 i915.enable_fbc=1"
+
+        make iso_img -j$(nproc)
+
+
+    - name: Locate ISO
+      run: |
+        find bliss -name "*.iso"
+
+
+    - name: Upload ISO
+      uses: actions/upload-artifact@v4
+      with:
+        name: BlissOS18-i915-IntelHD5500
+        path: |
+          bliss/**/out/**/*.iso
