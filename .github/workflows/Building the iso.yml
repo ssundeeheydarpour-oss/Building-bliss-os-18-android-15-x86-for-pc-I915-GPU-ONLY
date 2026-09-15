@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
 
     env:
       BLISS_BUILD_VARIANT: foss
@@ -14,15 +14,24 @@ jobs:
 
     steps:
 
-      - name: Free runner disk space
+      # -----------------------------
+      # Free some preinstalled space
+      # -----------------------------
+      - name: Free disk space
         run: |
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /usr/local/.ghcup
           sudo rm -rf /opt/ghc
           sudo apt-get clean
 
-      - name: Install BlissOS build dependencies
+      # -----------------------------
+      # BlissOS dependencies
+      # Exact packages from Voyager
+      # README
+      # -----------------------------
+      - name: Install dependencies
         run: |
+          sudo dpkg --add-architecture i386
           sudo apt-get update
 
           sudo apt-get install -y \
@@ -38,7 +47,7 @@ jobs:
             gcc-multilib \
             g++-multilib \
             libc6-dev-i386 \
-            lib32ncurses-dev \
+            lib32ncurses5-dev \
             x11proto-core-dev \
             libx11-dev \
             lib32z-dev \
@@ -62,40 +71,65 @@ jobs:
             meson \
             glslang-tools \
             git-lfs \
-            libncurses6 \
-            libncurses6:i386 \
+            libncurses5 \
+            libncurses5:i386 \
             libelf-dev \
             aapt \
             zstd \
             rdfind \
             nasm \
-            kmod \
-            rsync \
-            wget \
-            ca-certificates
+            kmod
 
           git lfs install
 
-      - name: Create ncurses compatibility libraries
+      # -----------------------------
+      # Rust
+      # -----------------------------
+      - name: Remove distro Rust
         run: |
-          sudo ln -sf /lib/x86_64-linux-gnu/libncurses.so.6 \
-            /lib/x86_64-linux-gnu/libncurses.so.5
+          sudo apt-get remove -y rustc bindgen cargo || true
 
-          sudo ln -sf /lib/x86_64-linux-gnu/libncursesw.so.6 \
-            /lib/x86_64-linux-gnu/libncursesw.so.5
+      - name: Install rustup
+        run: |
+          curl --proto '=https' \
+            --tlsv1.2 \
+            -sSf https://sh.rustup.rs | \
+            sh -s -- -y
 
-          sudo ln -sf /lib/x86_64-linux-gnu/libtinfo.so.6 \
-            /lib/x86_64-linux-gnu/libtinfo.so.5
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-          sudo ln -sf /lib/i386-linux-gnu/libncurses.so.6 \
-            /lib/i386-linux-gnu/libncurses.so.5
+      - name: Configure Rust
+        shell: bash
+        run: |
+          source "$HOME/.cargo/env"
 
-          sudo ln -sf /lib/i386-linux-gnu/libncursesw.so.6 \
-            /lib/i386-linux-gnu/libncursesw.so.5
+          rustup default stable
 
-          sudo ln -sf /lib/i386-linux-gnu/libtinfo.so.6 \
-            /lib/i386-linux-gnu/libtinfo.so.5
+          cargo install cargo-ndk
 
+          rustup target add \
+            x86_64-linux-android \
+            i686-linux-android
+
+          cargo install --version 0.69.1 bindgen-cli
+          cargo install cbindgen
+
+          echo "Rust:"
+          rustc --version
+          cargo --version
+
+          echo "cargo-ndk:"
+          cargo-ndk --version
+
+          echo "bindgen:"
+          bindgen --version
+
+          echo "cbindgen:"
+          cbindgen --version
+
+      # -----------------------------
+      # Repo
+      # -----------------------------
       - name: Install repo
         run: |
           mkdir -p "$HOME/bin"
@@ -108,38 +142,12 @@ jobs:
 
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Install Rust with rustup
-        run: |
-          curl --proto '=https' \
-            --tlsv1.2 \
-            -sSf https://sh.rustup.rs | \
-            sh -s -- -y
-
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Configure Rust
-        run: |
-          source "$HOME/.cargo/env"
-
-          rustup default stable
-
-          rustup target add x86_64-linux-android
-          rustup target add i686-linux-android
-
-          cargo install cargo-ndk
-          cargo install --version 0.69.1 bindgen-cli
-          cargo install cbindgen
-
-          rustc --version
-          cargo --version
-          cargo-ndk --version
-          bindgen --version
-          cbindgen --version
-
-      - name: Initialize Voyager source
+      # -----------------------------
+      # Initialize Voyager
+      # -----------------------------
+      - name: Initialize BlissOS Voyager
         run: |
           mkdir -p "$GITHUB_WORKSPACE/bliss"
-
           cd "$GITHUB_WORKSPACE/bliss"
 
           repo init \
@@ -147,7 +155,10 @@ jobs:
             -b voyager-x86 \
             --git-lfs
 
-      - name: Sync source
+      # -----------------------------
+      # Sync
+      # -----------------------------
+      - name: Sync BlissOS source
         working-directory: ${{ github.workspace }}/bliss
         run: |
           repo sync \
@@ -159,55 +170,61 @@ jobs:
             --optimized-fetch \
             --prune
 
-      - name: Prepare FOSS packages
+      # -----------------------------
+      # Verify source
+      # -----------------------------
+      - name: Verify Voyager source
         working-directory: ${{ github.workspace }}/bliss
         run: |
-          test -d vendor/foss
-
-          cd vendor/foss
-
-          chmod +x update.sh
-
-          printf "1\n" | ./update.sh
-
-      - name: Verify build environment
-        working-directory: ${{ github.workspace }}/bliss
-        run: |
+          echo "Checking envsetup..."
           test -f build/envsetup.sh
 
-          echo "FOSS packages:"
-          find vendor/foss -maxdepth 2 -type f | head -50
+          echo "Checking FOSS..."
+          test -n "$BLISS_BUILD_VARIANT"
+          echo "BLISS_BUILD_VARIANT=$BLISS_BUILD_VARIANT"
 
-      - name: Configure ccache
-        run: |
-          ccache --max-size=10G
-          ccache --show-config
+          echo "Checking manifest..."
+          git -C .repo/manifests branch --show-current || true
 
+          echo "Source ready."
+
+      # -----------------------------
+      # Build
+      # -----------------------------
       - name: Build BlissOS 18 FOSS
         working-directory: ${{ github.workspace }}/bliss
         shell: bash
         run: |
           set -e
 
-          source build/envsetup.sh
-
           export BLISS_BUILD_VARIANT=foss
 
-          lunch bliss_x86_64-userdebug
+          source build/envsetup.sh
+
+          lunch bliss_x86_64-ap4a-userdebug
+
+          echo "Starting BlissOS FOSS build..."
 
           make iso_img -j"$(nproc --all)"
 
+      # -----------------------------
+      # Find ISO
+      # -----------------------------
       - name: Find ISO
         if: success()
         working-directory: ${{ github.workspace }}/bliss
         run: |
-          echo "===== ISO FILES ====="
+          echo "Searching for ISO..."
 
-          find out -type f \
-            \( -iname "*.iso" -o -iname "*.img" \) \
+          find out \
+            -type f \
+            -iname "*.iso" \
             -print
 
-      - name: Upload BlissOS ISO
+      # -----------------------------
+      # Upload ISO
+      # -----------------------------
+      - name: Upload ISO
         if: success()
         uses: actions/upload-artifact@v4
         with:
