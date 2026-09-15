@@ -1,0 +1,198 @@
+name: Build BlissOS 18 Voyager x86_64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    env:
+      BLISS_BUILD_VARIANT: vanilla
+      USE_CCACHE: 1
+      CCACHE_EXEC: /usr/bin/ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+    steps:
+      - name: Check runner
+        run: |
+          echo "CPU:"
+          nproc --all
+          echo
+          echo "RAM:"
+          free -h
+          echo
+          echo "Disk:"
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            git-core \
+            gnupg \
+            flex \
+            bison \
+            gperf \
+            build-essential \
+            zip \
+            curl \
+            zlib1g-dev \
+            gcc-multilib \
+            g++-multilib \
+            libc6-dev-i386 \
+            lib32ncurses5-dev \
+            x11proto-core-dev \
+            libx11-dev \
+            lib32z-dev \
+            ccache \
+            libgl1-mesa-dev \
+            libxml2-utils \
+            xsltproc \
+            unzip \
+            squashfs-tools \
+            python3-mako \
+            libssl-dev \
+            ninja-build \
+            lunzip \
+            syslinux \
+            syslinux-utils \
+            gettext \
+            genisoimage \
+            bc \
+            xorriso \
+            xmlstarlet \
+            meson \
+            glslang-tools \
+            git-lfs \
+            libncurses5 \
+            libncurses5:i386 \
+            libelf-dev \
+            aapt \
+            zstd \
+            rdfind \
+            nasm \
+            kmod \
+            ca-certificates \
+            rsync \
+            wget \
+            file \
+            python3
+
+          git lfs install
+
+      - name: Install repo
+        run: |
+          mkdir -p "$HOME/bin"
+
+          curl -L \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$HOME/bin/repo"
+
+          chmod +x "$HOME/bin/repo"
+
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Install rustup
+        run: |
+          curl --proto '=https' \
+               --tlsv1.2 \
+               -sSf \
+               https://sh.rustup.rs | \
+               sh -s -- -y
+
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Rust
+        run: |
+          source "$HOME/.cargo/env"
+
+          rustup toolchain install stable
+          rustup default stable
+
+          rustup target add x86_64-linux-android
+          rustup target add i686-linux-android
+
+          cargo install cargo-ndk
+          cargo install --version 0.69.1 bindgen-cli
+          cargo install cbindgen
+
+          rustc --version
+          cargo --version
+          bindgen --version
+          cbindgen --version
+          cargo-ndk --version
+
+      - name: Initialize BlissOS Voyager
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bliss"
+          cd "$GITHUB_WORKSPACE/bliss"
+
+          repo init \
+            -u https://github.com/BlissOS/platform_manifest.git \
+            -b voyager-x86 \
+            --git-lfs
+
+      - name: Sync BlissOS source
+        working-directory: ${{ github.workspace }}/bliss
+        run: |
+          repo sync \
+            -c \
+            --force-sync \
+            --no-tags \
+            --no-clone-bundle \
+            -j"$(nproc --all)" \
+            --optimized-fetch \
+            --prune
+
+      - name: Verify Voyager tree
+        working-directory: ${{ github.workspace }}/bliss
+        run: |
+          echo "Checking Android version..."
+          grep -n "android-15" .repo/manifests/default.xml || true
+
+          echo
+          echo "Checking build environment..."
+          test -f build/envsetup.sh
+
+          echo
+          echo "Checking x86_64 target..."
+          grep -R "bliss_x86_64-ap4a" device vendor build 2>/dev/null | head -20 || true
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=10G
+          ccache --show-config
+
+      - name: Build BlissOS 18
+        working-directory: ${{ github.workspace }}/bliss
+        shell: bash
+        run: |
+          set -e
+
+          source build/envsetup.sh
+
+          export BLISS_BUILD_VARIANT=vanilla
+
+          lunch bliss_x86_64-ap4a-userdebug
+
+          make iso_img -j"$(nproc --all)"
+
+      - name: Locate ISO
+        if: success()
+        working-directory: ${{ github.workspace }}/bliss
+        run: |
+          echo "Searching for ISO..."
+          find out -type f -iname "*.iso" -print
+
+      - name: Upload ISO
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlissOS-18-Voyager-x86_64
+          path: |
+            bliss/out/**/*.iso
+            out/**/*.iso
+          if-no-files-found: error
+          compression-level: 0
