@@ -9,14 +9,9 @@ jobs:
 
     env:
       BLISS_BUILD_VARIANT: foss
-      USE_CCACHE: 1
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
 
     steps:
 
-      # -----------------------------
-      # Free some preinstalled space
-      # -----------------------------
       - name: Free disk space
         run: |
           sudo rm -rf /usr/local/lib/android
@@ -24,11 +19,6 @@ jobs:
           sudo rm -rf /opt/ghc
           sudo apt-get clean
 
-      # -----------------------------
-      # BlissOS dependencies
-      # Exact packages from Voyager
-      # README
-      # -----------------------------
       - name: Install dependencies
         run: |
           sudo dpkg --add-architecture i386
@@ -82,28 +72,24 @@ jobs:
 
           git lfs install
 
-      # -----------------------------
-      # Rust
-      # -----------------------------
       - name: Remove distro Rust
         run: |
-          sudo apt-get remove -y rustc bindgen cargo || true
+          sudo apt remove rustc bindgen cargo -y || true
 
       - name: Install rustup
+        shell: bash
         run: |
           curl --proto '=https' \
             --tlsv1.2 \
-            -sSf https://sh.rustup.rs | \
-            sh -s -- -y
+            -sSf https://sh.rust-lang.org/rustup.sh \
+            | sh -s -- -y
 
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Configure Rust
+      - name: Install required Rust programs
         shell: bash
         run: |
           source "$HOME/.cargo/env"
-
-          rustup default stable
 
           cargo install cargo-ndk
 
@@ -111,11 +97,16 @@ jobs:
             x86_64-linux-android \
             i686-linux-android
 
-          cargo install --version 0.69.1 bindgen-cli
+          cargo install \
+            --version 0.69.1 \
+            bindgen-cli
+
           cargo install cbindgen
 
-          echo "Rust:"
+          echo "Rust version:"
           rustc --version
+
+          echo "Cargo version:"
           cargo --version
 
           echo "cargo-ndk:"
@@ -127,10 +118,8 @@ jobs:
           echo "cbindgen:"
           cbindgen --version
 
-      # -----------------------------
-      # Repo
-      # -----------------------------
       - name: Install repo
+        shell: bash
         run: |
           mkdir -p "$HOME/bin"
 
@@ -142,10 +131,7 @@ jobs:
 
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      # -----------------------------
-      # Initialize Voyager
-      # -----------------------------
-      - name: Initialize BlissOS Voyager
+      - name: Initialize Voyager manifest
         run: |
           mkdir -p "$GITHUB_WORKSPACE/bliss"
           cd "$GITHUB_WORKSPACE/bliss"
@@ -155,10 +141,7 @@ jobs:
             -b voyager-x86 \
             --git-lfs
 
-      # -----------------------------
-      # Sync
-      # -----------------------------
-      - name: Sync BlissOS source
+      - name: Sync source
         working-directory: ${{ github.workspace }}/bliss
         run: |
           repo sync \
@@ -170,27 +153,6 @@ jobs:
             --optimized-fetch \
             --prune
 
-      # -----------------------------
-      # Verify source
-      # -----------------------------
-      - name: Verify Voyager source
-        working-directory: ${{ github.workspace }}/bliss
-        run: |
-          echo "Checking envsetup..."
-          test -f build/envsetup.sh
-
-          echo "Checking FOSS..."
-          test -n "$BLISS_BUILD_VARIANT"
-          echo "BLISS_BUILD_VARIANT=$BLISS_BUILD_VARIANT"
-
-          echo "Checking manifest..."
-          git -C .repo/manifests branch --show-current || true
-
-          echo "Source ready."
-
-      # -----------------------------
-      # Build
-      # -----------------------------
       - name: Build BlissOS 18 FOSS
         working-directory: ${{ github.workspace }}/bliss
         shell: bash
@@ -203,27 +165,15 @@ jobs:
 
           lunch bliss_x86_64-ap4a-userdebug
 
-          echo "Starting BlissOS FOSS build..."
-
           make iso_img -j"$(nproc --all)"
 
-      # -----------------------------
-      # Find ISO
-      # -----------------------------
       - name: Find ISO
         if: success()
         working-directory: ${{ github.workspace }}/bliss
         run: |
           echo "Searching for ISO..."
+          find out -type f -name "*.iso" -print
 
-          find out \
-            -type f \
-            -iname "*.iso" \
-            -print
-
-      # -----------------------------
-      # Upload ISO
-      # -----------------------------
       - name: Upload ISO
         if: success()
         uses: actions/upload-artifact@v4
@@ -231,8 +181,6 @@ jobs:
           name: BlissOS-18-Voyager-x86_64-FOSS
           path: |
             bliss/out/**/*.iso
-            bliss/out/**/*.img
             out/**/*.iso
-            out/**/*.img
           if-no-files-found: error
           compression-level: 0
