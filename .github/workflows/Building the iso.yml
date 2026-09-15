@@ -1,31 +1,27 @@
-name: Build BlissOS 18 Voyager x86_64
+name: Build BlissOS 18 Voyager x86_64 FOSS
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     env:
-      BLISS_BUILD_VARIANT: vanilla
+      BLISS_BUILD_VARIANT: foss
       USE_CCACHE: 1
-      CCACHE_EXEC: /usr/bin/ccache
       CCACHE_DIR: ${{ github.workspace }}/.ccache
 
     steps:
-      - name: Check runner
-        run: |
-          echo "CPU:"
-          nproc --all
-          echo
-          echo "RAM:"
-          free -h
-          echo
-          echo "Disk:"
-          df -h
 
-      - name: Install build dependencies
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /opt/ghc
+          sudo apt-get clean
+
+      - name: Install BlissOS build dependencies
         run: |
           sudo apt-get update
 
@@ -42,7 +38,7 @@ jobs:
             gcc-multilib \
             g++-multilib \
             libc6-dev-i386 \
-            lib32ncurses5-dev \
+            lib32ncurses-dev \
             x11proto-core-dev \
             libx11-dev \
             lib32z-dev \
@@ -66,21 +62,39 @@ jobs:
             meson \
             glslang-tools \
             git-lfs \
-            libncurses5 \
-            libncurses5:i386 \
+            libncurses6 \
+            libncurses6:i386 \
             libelf-dev \
             aapt \
             zstd \
             rdfind \
             nasm \
             kmod \
-            ca-certificates \
             rsync \
             wget \
-            file \
-            python3
+            ca-certificates
 
           git lfs install
+
+      - name: Create ncurses compatibility libraries
+        run: |
+          sudo ln -sf /lib/x86_64-linux-gnu/libncurses.so.6 \
+            /lib/x86_64-linux-gnu/libncurses.so.5
+
+          sudo ln -sf /lib/x86_64-linux-gnu/libncursesw.so.6 \
+            /lib/x86_64-linux-gnu/libncursesw.so.5
+
+          sudo ln -sf /lib/x86_64-linux-gnu/libtinfo.so.6 \
+            /lib/x86_64-linux-gnu/libtinfo.so.5
+
+          sudo ln -sf /lib/i386-linux-gnu/libncurses.so.6 \
+            /lib/i386-linux-gnu/libncurses.so.5
+
+          sudo ln -sf /lib/i386-linux-gnu/libncursesw.so.6 \
+            /lib/i386-linux-gnu/libncursesw.so.5
+
+          sudo ln -sf /lib/i386-linux-gnu/libtinfo.so.6 \
+            /lib/i386-linux-gnu/libtinfo.so.5
 
       - name: Install repo
         run: |
@@ -94,13 +108,12 @@ jobs:
 
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Install rustup
+      - name: Install Rust with rustup
         run: |
           curl --proto '=https' \
-               --tlsv1.2 \
-               -sSf \
-               https://sh.rustup.rs | \
-               sh -s -- -y
+            --tlsv1.2 \
+            -sSf https://sh.rustup.rs | \
+            sh -s -- -y
 
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
@@ -108,7 +121,6 @@ jobs:
         run: |
           source "$HOME/.cargo/env"
 
-          rustup toolchain install stable
           rustup default stable
 
           rustup target add x86_64-linux-android
@@ -120,13 +132,14 @@ jobs:
 
           rustc --version
           cargo --version
+          cargo-ndk --version
           bindgen --version
           cbindgen --version
-          cargo-ndk --version
 
-      - name: Initialize BlissOS Voyager
+      - name: Initialize Voyager source
         run: |
           mkdir -p "$GITHUB_WORKSPACE/bliss"
+
           cd "$GITHUB_WORKSPACE/bliss"
 
           repo init \
@@ -134,7 +147,7 @@ jobs:
             -b voyager-x86 \
             --git-lfs
 
-      - name: Sync BlissOS source
+      - name: Sync source
         working-directory: ${{ github.workspace }}/bliss
         run: |
           repo sync \
@@ -146,26 +159,31 @@ jobs:
             --optimized-fetch \
             --prune
 
-      - name: Verify Voyager tree
+      - name: Prepare FOSS packages
         working-directory: ${{ github.workspace }}/bliss
         run: |
-          echo "Checking Android version..."
-          grep -n "android-15" .repo/manifests/default.xml || true
+          test -d vendor/foss
 
-          echo
-          echo "Checking build environment..."
+          cd vendor/foss
+
+          chmod +x update.sh
+
+          printf "1\n" | ./update.sh
+
+      - name: Verify build environment
+        working-directory: ${{ github.workspace }}/bliss
+        run: |
           test -f build/envsetup.sh
 
-          echo
-          echo "Checking x86_64 target..."
-          grep -R "bliss_x86_64-ap4a" device vendor build 2>/dev/null | head -20 || true
+          echo "FOSS packages:"
+          find vendor/foss -maxdepth 2 -type f | head -50
 
       - name: Configure ccache
         run: |
           ccache --max-size=10G
           ccache --show-config
 
-      - name: Build BlissOS 18
+      - name: Build BlissOS 18 FOSS
         working-directory: ${{ github.workspace }}/bliss
         shell: bash
         run: |
@@ -173,26 +191,31 @@ jobs:
 
           source build/envsetup.sh
 
-          export BLISS_BUILD_VARIANT=vanilla
+          export BLISS_BUILD_VARIANT=foss
 
-          lunch bliss_x86_64-ap4a-userdebug
+          lunch bliss_x86_64-userdebug
 
           make iso_img -j"$(nproc --all)"
 
-      - name: Locate ISO
+      - name: Find ISO
         if: success()
         working-directory: ${{ github.workspace }}/bliss
         run: |
-          echo "Searching for ISO..."
-          find out -type f -iname "*.iso" -print
+          echo "===== ISO FILES ====="
 
-      - name: Upload ISO
+          find out -type f \
+            \( -iname "*.iso" -o -iname "*.img" \) \
+            -print
+
+      - name: Upload BlissOS ISO
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: BlissOS-18-Voyager-x86_64
+          name: BlissOS-18-Voyager-x86_64-FOSS
           path: |
             bliss/out/**/*.iso
+            bliss/out/**/*.img
             out/**/*.iso
+            out/**/*.img
           if-no-files-found: error
           compression-level: 0
