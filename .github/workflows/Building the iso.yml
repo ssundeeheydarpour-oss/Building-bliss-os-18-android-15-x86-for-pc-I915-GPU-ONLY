@@ -9,6 +9,8 @@ jobs:
 
     env:
       BLISS_BUILD_VARIANT: foss
+      USE_CCACHE: 1
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
 
     steps:
 
@@ -33,6 +35,7 @@ jobs:
             build-essential \
             zip \
             curl \
+            wget \
             zlib1g-dev \
             gcc-multilib \
             g++-multilib \
@@ -74,21 +77,30 @@ jobs:
 
       - name: Remove distro Rust
         run: |
-          sudo apt remove rustc bindgen cargo -y || true
+          sudo apt-get remove -y rustc cargo bindgen || true
 
       - name: Install rustup
         shell: bash
         run: |
-          curl --proto '=https' \
-            --tlsv1.2 \
-            -sSf https://sh.rust-lang.org/rustup.sh \
-            | sh -s -- -y
+          set -e
+
+          curl -L \
+            https://raw.githubusercontent.com/rust-lang/rustup/master/rustup-init.sh \
+            -o rustup-init.sh
+
+          chmod +x rustup-init.sh
+
+          ./rustup-init.sh \
+            -y \
+            --default-toolchain stable
 
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Install required Rust programs
+      - name: Configure Rust
         shell: bash
         run: |
+          set -e
+
           source "$HOME/.cargo/env"
 
           cargo install cargo-ndk
@@ -103,24 +115,24 @@ jobs:
 
           cargo install cbindgen
 
-          echo "Rust version:"
+          echo "===== Rust ====="
           rustc --version
-
-          echo "Cargo version:"
           cargo --version
 
-          echo "cargo-ndk:"
+          echo "===== cargo-ndk ====="
           cargo-ndk --version
 
-          echo "bindgen:"
+          echo "===== bindgen ====="
           bindgen --version
 
-          echo "cbindgen:"
+          echo "===== cbindgen ====="
           cbindgen --version
 
       - name: Install repo
         shell: bash
         run: |
+          set -e
+
           mkdir -p "$HOME/bin"
 
           curl -L \
@@ -131,9 +143,13 @@ jobs:
 
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Initialize Voyager manifest
+      - name: Initialize BlissOS Voyager
+        shell: bash
         run: |
+          set -e
+
           mkdir -p "$GITHUB_WORKSPACE/bliss"
+
           cd "$GITHUB_WORKSPACE/bliss"
 
           repo init \
@@ -141,9 +157,12 @@ jobs:
             -b voyager-x86 \
             --git-lfs
 
-      - name: Sync source
+      - name: Sync BlissOS
         working-directory: ${{ github.workspace }}/bliss
+        shell: bash
         run: |
+          set -e
+
           repo sync \
             -c \
             --force-sync \
@@ -152,6 +171,22 @@ jobs:
             -j"$(nproc --all)" \
             --optimized-fetch \
             --prune
+
+      - name: Prepare FOSS
+        working-directory: ${{ github.workspace }}/bliss
+        shell: bash
+        run: |
+          set -e
+
+          export BLISS_BUILD_VARIANT=foss
+
+          if [ -f vendor/foss/update.sh ]; then
+            chmod +x vendor/foss/update.sh
+            vendor/foss/update.sh
+          else
+            echo "FOSS update script not found."
+            echo "Using BLISS_BUILD_VARIANT=foss."
+          fi
 
       - name: Build BlissOS 18 FOSS
         working-directory: ${{ github.workspace }}/bliss
@@ -165,14 +200,24 @@ jobs:
 
           lunch bliss_x86_64-ap4a-userdebug
 
+          echo "================================="
+          echo "Building BlissOS 18 FOSS"
+          echo "Target: bliss_x86_64-ap4a-userdebug"
+          echo "================================="
+
           make iso_img -j"$(nproc --all)"
 
-      - name: Find ISO
+      - name: Locate ISO
         if: success()
         working-directory: ${{ github.workspace }}/bliss
+        shell: bash
         run: |
-          echo "Searching for ISO..."
-          find out -type f -name "*.iso" -print
+          echo "===== ISO FILES ====="
+
+          find out \
+            -type f \
+            -iname "*.iso" \
+            -print
 
       - name: Upload ISO
         if: success()
